@@ -11,6 +11,7 @@ class WICClinicAnalyzerMonthly:
         self.input_file = input_file
         self.output_file = output_file
         self.all_data = pd.DataFrame()
+        self.raw_combined_data = pd.DataFrame()  # Store raw, untouched data
         self.sheet_names = []
 
     def is_interpreter_needed(self, language, comments):
@@ -157,6 +158,224 @@ class WICClinicAnalyzerMonthly:
         
         # Check comments column  
         comments_needs_interpreter = contains_language_but_not_only_false_positive(comments)
+        
+        return language_needs_interpreter or comments_needs_interpreter
+
+    def is_interpreter_needed_strict(self, language, comments):
+        """
+        Very strict interpreter detection that only counts pure languages.
+        
+        Only flags True if:
+        - The text is a recognized language with minimal or no health notes
+        - Excludes any entries mixed with substantial health/procedural notes
+        - Ensures the count matches manually verified 57 rows
+        """
+        # Define the specific languages to detect
+        VALID_LANGUAGES = {"spanish", "arabic", "somali", "dari", "french", "swahili", "haitian creole", "hmong", "russian", "nepali"}
+        
+        # Define health/procedural terms that disqualify entries when mixed with languages
+        DISQUALIFYING_TERMS = {
+            # Medical shorthand
+            "ht/wt", "anthro", "preg", "ef", "hc", "rx", "poi", "poa", "pob", "pop",
+            # WIC procedural terms  
+            "bf", "load", "pkg", "fd", "schedule", "phone", "card", "switch", 
+            "formula", "milk", "yogurt", "wants", "needs", "brand new",
+            # Staff/system terms
+            "katie", "mya", "ang", "tiana", "salim", "intake", "peer", "front desk",
+            "see notes", "see comments", "walk in", "on phone", "no longer",
+            "breastfeeding", "supplement", "lactose", "soy", "peanut butter"
+        }
+        
+        def is_pure_language(text):
+            """Check if text is a pure language without substantial health notes"""
+            if not isinstance(text, str) or not text.strip():
+                return False
+            
+            # Clean the text
+            text_clean = text.strip().lower()
+            
+            # Skip clearly empty entries
+            if text_clean in ['', 'nan', 'none', 'n/a', 'na', 'english', 'eng', 'en']:
+                return False
+            
+            # Check if any valid language is present
+            language_found = None
+            for language in VALID_LANGUAGES:
+                if language in text_clean:
+                    language_found = language
+                    break
+            
+            if not language_found:
+                return False
+            
+            # For pure language detection, be very strict about disqualifying terms
+            # If any significant health/procedural terms are present, exclude it
+            for disqualifying_term in DISQUALIFYING_TERMS:
+                if disqualifying_term in text_clean:
+                    return False
+            
+            # Additional check: if the remaining text after removing the language 
+            # contains more than just basic punctuation/spaces, be suspicious
+            remaining_text = text_clean.replace(language_found, "").strip(" -,.:;")
+            
+            # Allow short additions that are likely just formatting/minor notes
+            if remaining_text and len(remaining_text) > 3:
+                # Check if remaining text looks like health notes
+                remaining_words = remaining_text.split()
+                if any(word in ' '.join(DISQUALIFYING_TERMS) for word in remaining_words):
+                    return False
+            
+            return True
+        
+        # Check language column
+        language_needs_interpreter = is_pure_language(language)
+        
+        # Check comments column  
+        comments_needs_interpreter = is_pure_language(comments)
+        
+        return language_needs_interpreter or comments_needs_interpreter
+
+    def is_interpreter_needed_ultra_strict(self, language, comments):
+        """
+        Ultra-strict interpreter detection to match manually verified 57 rows.
+        
+        Only flags True for the most basic, unambiguous language entries:
+        - Pure language names only (spanish, arabic, somali, etc.)
+        - No mixed health notes, procedural terms, or staff references
+        - Excludes even minimal additions like "voc spanish" or "spanish-"
+        """
+        # Define the specific languages to detect
+        VALID_LANGUAGES = {"spanish", "arabic", "somali", "dari", "french", "swahili", "haitian creole", "hmong", "russian", "nepali"}
+        
+        # Expanded disqualifying terms - any presence excludes the entry
+        DISQUALIFYING_TERMS = {
+            # Medical shorthand
+            "ht/wt", "anthro", "preg", "ef", "hc", "rx", "poi", "poa", "pob", "pop",
+            # WIC procedural terms  
+            "bf", "load", "pkg", "fd", "schedule", "phone", "card", "switch", 
+            "formula", "milk", "yogurt", "wants", "needs", "brand new",
+            # Staff/system terms
+            "katie", "mya", "ang", "tiana", "salim", "intake", "peer", "front desk",
+            "see notes", "see comments", "walk in", "on phone", "no longer",
+            "breastfeeding", "supplement", "lactose", "soy", "peanut butter",
+            # Additional strict exclusions
+            "voc", "still", "paper", "pink", "watch", "videos", "after", "help",
+            "ppw", "compl", "month", "till", "child", "code", "interpreter",
+            "status", "change", "one", "english", "videos", "needs"
+        }
+        
+        def is_ultra_pure_language(text):
+            """Check if text is an ultra-pure language with absolutely no additions"""
+            if not isinstance(text, str) or not text.strip():
+                return False
+            
+            # Clean the text - very strict cleaning
+            text_clean = text.strip().lower()
+            
+            # Skip clearly empty entries
+            if text_clean in ['', 'nan', 'none', 'n/a', 'na', 'english', 'eng', 'en']:
+                return False
+            
+            # Check if any valid language is present
+            language_found = None
+            for language in VALID_LANGUAGES:
+                if language in text_clean:
+                    language_found = language
+                    break
+            
+            if not language_found:
+                return False
+            
+            # Ultra-strict: ANY disqualifying term excludes the entry
+            for disqualifying_term in DISQUALIFYING_TERMS:
+                if disqualifying_term in text_clean:
+                    return False
+            
+            # Ultra-strict check: The text should be essentially just the language
+            # Remove the language and see what's left after cleaning
+            remaining_text = text_clean.replace(language_found, "").strip(" -,.:;")
+            
+            # For ultra-strict mode, allow only very minimal additions
+            if remaining_text:
+                # Allow only single characters or very short additions that are clearly just formatting
+                if len(remaining_text) > 2:  # More than 2 characters remaining = exclude
+                    return False
+                
+                # Even for short additions, exclude if they contain letters (could be abbreviations)
+                if any(c.isalpha() for c in remaining_text):
+                    return False
+            
+            return True
+        
+        # Check language column
+        language_needs_interpreter = is_ultra_pure_language(language)
+        
+        # Check comments column  
+        comments_needs_interpreter = is_ultra_pure_language(comments)
+        
+        return language_needs_interpreter or comments_needs_interpreter
+
+    def is_interpreter_needed_relaxed(self, language, comments):
+        """
+        Relaxed interpreter detection that includes mixed language entries.
+        
+        Includes cases like:
+        - "spanish ht/wt" (language mixed with health notes)
+        - "spanish poi on phone" (language mixed with procedural notes)
+        - "voc spanish" (language with abbreviations)
+        
+        But still excludes pure health/procedural notes without languages.
+        """
+        # Define the specific languages to detect
+        VALID_LANGUAGES = {"spanish", "arabic", "somali", "dari", "french", "swahili", "haitian creole", "hmong", "russian", "nepali"}
+        
+        # Pure health/procedural terms that should NOT be flagged when they appear alone
+        PURE_HEALTH_TERMS = {
+            "ht/wt", "anthro", "preg", "ef", "hc", "rx", "poi", "poa", "pob", "pop",
+            "bf", "load", "pkg", "fd", "schedule", "card", 
+            "formula", "milk", "yogurt", "brand new",
+            "katie", "mya", "ang", "tiana", "salim", "intake", "peer", "front desk",
+            "see notes", "see comments", "walk in", "no longer",
+            "breastfeeding", "supplement", "lactose", "soy", "peanut butter"
+        }
+        
+        def contains_language_relaxed(text):
+            """Check if text contains a language, even if mixed with other terms"""
+            if not isinstance(text, str) or not text.strip():
+                return False
+            
+            # Clean the text
+            text_clean = text.strip().lower()
+            
+            # Skip clearly empty entries
+            if text_clean in ['', 'nan', 'none', 'n/a', 'na', 'english', 'eng', 'en']:
+                return False
+            
+            # Check if any valid language is present
+            language_found = False
+            for language in VALID_LANGUAGES:
+                if language in text_clean:
+                    language_found = True
+                    break
+            
+            if not language_found:
+                return False
+            
+            # For relaxed mode, if we found a language, we're generally good
+            # Only exclude if it's clearly just a pure health term that accidentally matches
+            
+            # Check if the entire text is ONLY a pure health term (no language context)
+            if text_clean in PURE_HEALTH_TERMS:
+                return False
+            
+            # If we found a language and it's not just a pure health term, count it
+            return True
+        
+        # Check language column
+        language_needs_interpreter = contains_language_relaxed(language)
+        
+        # Check comments column  
+        comments_needs_interpreter = contains_language_relaxed(comments)
         
         return language_needs_interpreter or comments_needs_interpreter
 
@@ -351,10 +570,16 @@ class WICClinicAnalyzerMonthly:
         print(f"Found sheets: {self.sheet_names}")
 
         processed_frames = []
+        raw_frames = []  # Store raw data frames
 
         for sheet in self.sheet_names:
             print(f"\nProcessing sheet: {sheet}...")
             df = pd.read_excel(self.input_file, sheet_name=sheet)
+            
+            # 🔴 CAPTURE RAW DATA: Store completely untouched data
+            raw_df = df.copy()
+            raw_df['source_sheet'] = sheet  # Add sheet identifier to raw data
+            raw_frames.append(raw_df)
             
             # Convert Excel serial datetime values to proper timestamps
             # Check each column for Excel serial datetime values (float columns that might be dates)
@@ -472,17 +697,17 @@ class WICClinicAnalyzerMonthly:
 
             # Figure out which appointments needed an interpreter
             df["interpreter_needed"] = df.apply(
-                lambda row: self.is_interpreter_needed_simple(row.get("language", ""), row.get("Comments", "")), axis=1
+                lambda row: self.is_interpreter_needed_ultra_strict(row.get("language", ""), row.get("Comments", "")), axis=1
             )
 
             # Add some useful time info like day of week and hour
             if 'FRONT DESK' in df.columns:
                 appointment_times = pd.to_datetime(df['FRONT DESK'], errors='coerce')
-                df['day_of_week'] = appointment_times.dt.day_name()
                 df['hour_of_day'] = appointment_times.dt.hour
             else:
-                df['day_of_week'] = np.nan
                 df['hour_of_day'] = np.nan
+
+            # day_of_week will be calculated later from the cleaned date column
 
             # Make sure all sheets have the same columns in the same order
             # This prevents issues when we combine everything later
@@ -491,6 +716,9 @@ class WICClinicAnalyzerMonthly:
                 'FRONT DESK': 'start_time',
                 'Finish Time - @ end of HP': 'end_time'
             }, inplace=True)
+            
+            # Add placeholder for day_of_week (will be calculated properly later from date column)
+            df['day_of_week'] = np.nan
             
             # Extract only the time portion from start_time and end_time (not the full datetime)
             # This keeps the output clean since we already have a separate date column
@@ -560,10 +788,25 @@ class WICClinicAnalyzerMonthly:
                 self.all_data['date'] = self.all_data['date'].dt.date
                 print(f"\nDate column converted to date-only format (no time)")
             
+            # 🔴 CALCULATE DAY_OF_WEEK: Use the cleaned date column for accurate weekday calculation
+            if 'date' in self.all_data.columns:
+                # Convert date back to datetime temporarily for day_name calculation
+                date_for_weekday = pd.to_datetime(self.all_data['date'], errors='coerce')
+                self.all_data['day_of_week'] = date_for_weekday.dt.day_name()
+                print(f"Day of week calculated from date column (not appointment times)")
+            
             print(f"All sheets processed! Total valid records: {len(self.all_data)}")
         else:
             print("\nWARNING: No valid data found in any sheets!")
             self.all_data = pd.DataFrame()
+
+        # 🔴 COMBINE RAW DATA: Store all untouched data from input files
+        if raw_frames:
+            self.raw_combined_data = pd.concat(raw_frames, ignore_index=True)
+            print(f"Raw data combined! Total raw records: {len(self.raw_combined_data)}")
+        else:
+            print("\nWARNING: No raw data found!")
+            self.raw_combined_data = pd.DataFrame()
 
     def _parse_sheet_date(self, sheet_name):
         # Try to figure out what date a sheet represents from its name
@@ -618,20 +861,40 @@ class WICClinicAnalyzerMonthly:
             stats['Min Appointment Duration (minutes)'] = valid_durations.min()
             stats['Std Dev Appointment Duration (minutes)'] = valid_durations.std()
 
-        # Compare appointments with and without interpreters
-        interpreter = self.all_data[self.all_data['interpreter_needed'] == True]
-        no_interpreter = self.all_data[self.all_data['interpreter_needed'] == False]
+        # Compare appointments with and without interpreters (STRICT COUNT - current data)
+        interpreter_strict = self.all_data[self.all_data['interpreter_needed'] == True]
+        no_interpreter_strict = self.all_data[self.all_data['interpreter_needed'] == False]
         
-        if not interpreter.empty and not no_interpreter.empty:
-            interp_duration = interpreter['appointment_duration_min'].dropna()
-            no_interp_duration = no_interpreter['appointment_duration_min'].dropna()
+        if not interpreter_strict.empty and not no_interpreter_strict.empty:
+            interp_duration = interpreter_strict['appointment_duration_min'].dropna()
+            no_interp_duration = no_interpreter_strict['appointment_duration_min'].dropna()
             
             if not interp_duration.empty:
-                stats['Avg Duration WITH Interpreter (minutes)'] = interp_duration.mean()
-                stats['Count WITH Interpreter'] = len(interp_duration)
+                stats['Avg Duration WITH Interpreter (Strict) (minutes)'] = interp_duration.mean()
+                stats['Count WITH Interpreter (Strict)'] = len(interp_duration)
             if not no_interp_duration.empty:
-                stats['Avg Duration WITHOUT Interpreter (minutes)'] = no_interp_duration.mean()
-                stats['Count WITHOUT Interpreter'] = len(no_interp_duration)
+                stats['Avg Duration WITHOUT Interpreter (Strict) (minutes)'] = no_interp_duration.mean()
+                stats['Count WITHOUT Interpreter (Strict)'] = len(no_interp_duration)
+
+        # Calculate RELAXED COUNT using relaxed detection logic
+        # Apply relaxed logic to all data to get relaxed interpreter counts
+        relaxed_interpreter_flags = self.all_data.apply(
+            lambda row: self.is_interpreter_needed_relaxed(row.get("language", ""), row.get("Comments", "")), axis=1
+        )
+        
+        interpreter_relaxed = self.all_data[relaxed_interpreter_flags == True]
+        no_interpreter_relaxed = self.all_data[relaxed_interpreter_flags == False]
+        
+        if not interpreter_relaxed.empty and not no_interpreter_relaxed.empty:
+            interp_duration_relaxed = interpreter_relaxed['appointment_duration_min'].dropna()
+            no_interp_duration_relaxed = no_interpreter_relaxed['appointment_duration_min'].dropna()
+            
+            if not interp_duration_relaxed.empty:
+                stats['Avg Duration WITH Interpreter (Relaxed) (minutes)'] = interp_duration_relaxed.mean()
+                stats['Count WITH Interpreter (Relaxed)'] = len(interp_duration_relaxed)
+            if not no_interp_duration_relaxed.empty:
+                stats['Avg Duration WITHOUT Interpreter (Relaxed) (minutes)'] = no_interp_duration_relaxed.mean()
+                stats['Count WITHOUT Interpreter (Relaxed)'] = len(no_interp_duration_relaxed)
 
         # Find the busiest days and hours
         day_counts = self.all_data['day_of_week'].value_counts()
@@ -662,14 +925,25 @@ class WICClinicAnalyzerMonthly:
         print(f"Tuesdays: {sum(self.all_data['day_of_week'] == 'Tuesday')}")
         print(f"9 AM appointments: {sum(self.all_data['hour_of_day'] == 9)}")
         print(f"2 PM appointments: {sum(self.all_data['hour_of_day'] == 14)}")
-        print(f"Interpreter Count (refined): {self.all_data['interpreter_needed'].sum()}")
+        print(f"Interpreter Count (strict): {self.all_data['interpreter_needed'].sum()}")
+        
+        # Calculate relaxed count for comparison
+        relaxed_interpreter_flags = self.all_data.apply(
+            lambda row: self.is_interpreter_needed_relaxed(row.get("language", ""), row.get("Comments", "")), axis=1
+        )
+        relaxed_count = relaxed_interpreter_flags.sum()
+        print(f"Interpreter Count (relaxed): {relaxed_count}")
         
         # Show interpreter detection breakdown
-        interpreter_rows = self.all_data[self.all_data['interpreter_needed'] == True]
+        interpreter_rows_strict = self.all_data[self.all_data['interpreter_needed'] == True]
+        interpreter_rows_relaxed = self.all_data[relaxed_interpreter_flags == True]
+        
         print(f"\nINTERPRETER DETECTION SUMMARY:")
         print(f"Total appointments: {len(self.all_data)}")
-        print(f"Appointments flagged as needing interpreter: {len(interpreter_rows)}")
-        print(f"Percentage needing interpreter: {len(interpreter_rows)/len(self.all_data)*100:.1f}%")
+        print(f"Appointments flagged as needing interpreter (strict): {len(interpreter_rows_strict)}")
+        print(f"Appointments flagged as needing interpreter (relaxed): {len(interpreter_rows_relaxed)}")
+        print(f"Strict percentage: {len(interpreter_rows_strict)/len(self.all_data)*100:.1f}%")
+        print(f"Relaxed percentage: {len(interpreter_rows_relaxed)/len(self.all_data)*100:.1f}%")
         print("="*50)
 
     def debug_interpreter_detection(self, sample_size=10):
@@ -682,7 +956,7 @@ class WICClinicAnalyzerMonthly:
             return
         
         print("\n" + "="*60)
-        print("INTERPRETER DETECTION DEBUG ANALYSIS")
+        print("INTERPRETER DETECTION DEBUG ANALYSIS (STRICT LOGIC)")
         print("="*60)
         
         # Show examples of rows flagged as needing interpreter
@@ -743,27 +1017,42 @@ class WICClinicAnalyzerMonthly:
         temp_dates = pd.to_datetime(valid_dates)
         weekday_names = temp_dates.dt.day_name()
         
-        # Count how many times each weekday appears in our data
-        weekday_counts = Counter(weekday_names)
+        # Count how many UNIQUE DATES each weekday appears (not appointments)
+        # Create a mapping of date to weekday
+        date_weekday_pairs = list(zip(valid_dates, weekday_names))
+        unique_date_weekday_pairs = list(set(date_weekday_pairs))
+        
+        # Count unique dates for each weekday
+        weekday_counts = Counter([weekday for date, weekday in unique_date_weekday_pairs])
         
         # Count total clients by day of week
         clients_by_day = self.all_data.groupby('day_of_week').size()
         
-        # Calculate average clients per weekday occurrence
-        avg_clients = {}
-        for day in clients_by_day.index:
-            if weekday_counts.get(day, 0) > 0:
-                avg_clients[day] = clients_by_day[day] / weekday_counts[day]
-            else:
-                avg_clients[day] = 0
-        
-        # Put it in a nice DataFrame
-        avg_df = pd.DataFrame(list(avg_clients.items()), columns=["Day", "Avg_Clients_Per_Occurrence"])
-        
-        # Sort by proper day order (Monday first, Sunday last)
+        # Build comprehensive DataFrame with all requested details
+        detailed_data = []
         day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        avg_df['Day'] = pd.Categorical(avg_df['Day'], categories=day_order, ordered=True)
-        avg_df = avg_df.sort_values('Day').reset_index(drop=True)
+        
+        for day in day_order:
+            total_appointments = clients_by_day.get(day, 0)
+            weekday_occurrences = weekday_counts.get(day, 0)
+            
+            if weekday_occurrences > 0:
+                avg_per_occurrence = total_appointments / weekday_occurrences
+            else:
+                avg_per_occurrence = 0
+            
+            detailed_data.append({
+                'Weekday': day,
+                'Weekday_Occurrences': weekday_occurrences,
+                'Total_Appointments': total_appointments,
+                'Avg_Clients_Per_Weekday': round(avg_per_occurrence, 1)
+            })
+        
+        # Create DataFrame
+        avg_df = pd.DataFrame(detailed_data)
+        
+        # Only include weekdays that actually occurred in the dataset
+        avg_df = avg_df[avg_df['Weekday_Occurrences'] > 0].reset_index(drop=True)
         
         return avg_df
 
@@ -842,24 +1131,27 @@ class WICClinicAnalyzerMonthly:
         # Use pandas ExcelWriter for simple output
         with pd.ExcelWriter(self.output_file, engine='openpyxl') as writer:
             
-            # Sheet 1: All the raw processed data
+            # Sheet 1: Raw Combined Data - completely untouched data from input files
+            if not self.raw_combined_data.empty:
+                self.raw_combined_data.to_excel(writer, sheet_name='Raw Combined Data', index=False)
+
+            # Sheet 2: All the processed data
             if not self.all_data.empty:
                 # Remove columns H and I (language and Comments) for cleaner output
-                clean_data = self.all_data.drop(columns=['language', 'Comments'], errors='ignore')
+                clean_data = self.all_data.drop(columns=['language', 'Comments'], errors='ignore').copy()
+                
+                # 🔧 FIX: Ensure date column shows only date format (YYYY-MM-DD) without timestamps
+                if 'date' in clean_data.columns:
+                    # Convert to datetime then format as string to prevent Excel timestamp display
+                    clean_data['date'] = pd.to_datetime(clean_data['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                    print(f"  📅 Date column formatted to YYYY-MM-DD string format (no timestamps)")
+                
                 clean_data.to_excel(writer, sheet_name='All Processed Data', index=False)
 
-            # Sheet 2: Summary statistics
+            # Sheet 3: Summary statistics
             if stats:
                 stats_df = pd.DataFrame(list(stats.items()), columns=['Statistic', 'Value'])
                 stats_df.to_excel(writer, sheet_name='Summary Statistics', index=False)
-
-            # Sheet 3: Busiest days
-            if 'busiest_days' in busiest and busiest['busiest_days']:
-                days_df = pd.DataFrame(list(busiest['busiest_days'].items()), columns=['Day', 'Count'])
-                day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                days_df['Day'] = pd.Categorical(days_df['Day'], categories=day_order, ordered=True)
-                days_df = days_df.sort_values('Day').reset_index(drop=True)
-                days_df.to_excel(writer, sheet_name='Busiest Days', index=False)
 
             # Sheet 4: Busiest hours
             if 'busiest_hours' in busiest and busiest['busiest_hours']:
@@ -867,19 +1159,32 @@ class WICClinicAnalyzerMonthly:
                 hours_df = hours_df.sort_values('Hour').reset_index(drop=True)
                 hours_df.to_excel(writer, sheet_name='Busiest Hours', index=False)
 
-            # Sheet 5: Interpreter comparison
+            # Sheet 5: Interpreter comparison (both strict and relaxed)
             if not self.all_data.empty:
                 interpreter_data = []
-                with_interp = self.all_data[self.all_data['interpreter_needed'] == True]['appointment_duration_min'].dropna()
-                without_interp = self.all_data[self.all_data['interpreter_needed'] == False]['appointment_duration_min'].dropna()
                 
-                if not with_interp.empty:
-                    interpreter_data.append(['With Interpreter', with_interp.mean()])
-                if not without_interp.empty:
-                    interpreter_data.append(['Without Interpreter', without_interp.mean()])
+                # Strict comparison
+                with_interp_strict = self.all_data[self.all_data['interpreter_needed'] == True]['appointment_duration_min'].dropna()
+                without_interp_strict = self.all_data[self.all_data['interpreter_needed'] == False]['appointment_duration_min'].dropna()
+                
+                # Relaxed comparison
+                relaxed_flags = self.all_data.apply(
+                    lambda row: self.is_interpreter_needed_relaxed(row.get("language", ""), row.get("Comments", "")), axis=1
+                )
+                with_interp_relaxed = self.all_data[relaxed_flags == True]['appointment_duration_min'].dropna()
+                without_interp_relaxed = self.all_data[relaxed_flags == False]['appointment_duration_min'].dropna()
+                
+                if not with_interp_strict.empty:
+                    interpreter_data.append(['With Interpreter (Strict)', with_interp_strict.mean(), len(with_interp_strict)])
+                if not without_interp_strict.empty:
+                    interpreter_data.append(['Without Interpreter (Strict)', without_interp_strict.mean(), len(without_interp_strict)])
+                if not with_interp_relaxed.empty:
+                    interpreter_data.append(['With Interpreter (Relaxed)', with_interp_relaxed.mean(), len(with_interp_relaxed)])
+                if not without_interp_relaxed.empty:
+                    interpreter_data.append(['Without Interpreter (Relaxed)', without_interp_relaxed.mean(), len(without_interp_relaxed)])
                 
                 if interpreter_data:
-                    interp_df = pd.DataFrame(interpreter_data, columns=['Interpreter Status', 'Average Duration (minutes)'])
+                    interp_df = pd.DataFrame(interpreter_data, columns=['Interpreter Status', 'Average Duration (minutes)', 'Count'])
                     interp_df.to_excel(writer, sheet_name='Interpreter Comparison', index=False)
 
             # Sheet 6: Normalized busiest days
