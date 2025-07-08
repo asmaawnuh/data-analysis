@@ -1155,9 +1155,35 @@ class WICClinicAnalyzerMonthly:
 
             # Sheet 4: Busiest hours
             if 'busiest_hours' in busiest and busiest['busiest_hours']:
-                hours_df = pd.DataFrame(list(busiest['busiest_hours'].items()), columns=['Hour', 'Count'])
-                hours_df = hours_df.sort_values('Hour').reset_index(drop=True)
+                # Convert numeric hours to 12-hour AM/PM format
+                def convert_hour_to_12hour_format(hour):
+                    """Convert 24-hour format to 12-hour AM/PM format"""
+                    hour = int(hour)
+                    if hour == 0:
+                        return "12:00 AM"
+                    elif hour < 12:
+                        return f"{hour:02d}:00 AM"
+                    elif hour == 12:
+                        return "12:00 PM"
+                    else:
+                        return f"{hour-12:02d}:00 PM"
+                
+                # Create DataFrame with numeric hours for proper sorting
+                hours_data = []
+                for hour, count in busiest['busiest_hours'].items():
+                    hours_data.append({
+                        'Hour_Numeric': int(hour),  # Keep numeric for sorting
+                        'Hour': convert_hour_to_12hour_format(hour),  # 12-hour format for display
+                        'Count': count
+                    })
+                
+                hours_df = pd.DataFrame(hours_data)
+                # Sort by numeric hour to ensure chronological order (not alphabetical)
+                hours_df = hours_df.sort_values('Hour_Numeric').reset_index(drop=True)
+                # Remove the numeric column before saving to Excel
+                hours_df = hours_df[['Hour', 'Count']]
                 hours_df.to_excel(writer, sheet_name='Busiest Hours', index=False)
+                print(f"  🕐 Busiest Hours formatted with 12-hour AM/PM time format")
 
             # Sheet 5: Interpreter comparison (both strict and relaxed)
             if not self.all_data.empty:
